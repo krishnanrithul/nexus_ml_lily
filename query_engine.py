@@ -6,22 +6,22 @@ from src.tools.vector_ops import (
 
 # ─────────────────────────────────────────────────────────────
 # INTENT ROUTING
-# Classify the question before retrieval so we search the
-# right record type. Searching all types for every question
-# dilutes results — a segment question should only hit
-# segment_summary records, not narrative sentences.
 # ─────────────────────────────────────────────────────────────
 
 _SEGMENT_KEYWORDS = {
-    "segment", "neighborhood", "neighbourhood", "region", "area",
-    "worst", "best", "highest error", "lowest error", "which part",
-    "where did", "which group", "category", "district"
+    "quarter", "q1", "q2", "q3", "q4", "period", "earnings",
+    "worst quarter", "best quarter", "which quarter", "which period",
+    "worst", "best", "highest error", "lowest error", "which group",
+    "reaction day", "day 1", "day 2", "day 3", "day 4", "day 5",
+    "day 6", "day 7", "day 8", "day 9", "day 10",
 }
 
 _PREDICTION_KEYWORDS = {
     "row", "rows", "individual", "specific", "prediction", "predictions",
     "above", "below", "over", "under", "high error", "low error",
-    "missed", "off by", "wrong", "worst case", "example", "show me"
+    "missed", "off by", "wrong", "worst case", "show me",
+    "shap", "driver", "drivers", "what caused", "why did", "why was",
+    "excess", "excess return", "quarter_day",
 }
 
 
@@ -30,9 +30,9 @@ def _classify_intent(question: str) -> str:
     Classify question into one of three retrieval intents.
 
     Returns:
-        'segment'    → search segment_summary records
-        'prediction' → search prediction records
-        'narrative'  → search narrative records (default)
+        'segment'    → search segment_summary records (per-quarter metrics)
+        'prediction' → search prediction records (quarter_day rows + SHAP drivers)
+        'narrative'  → search narrative records (default — overall performance)
     """
     q = question.lower()
 
@@ -62,7 +62,6 @@ def _retrieve(question: str, intent: str, top_k: int) -> list[dict]:
     else:
         results = query_chunks(question, top_k=top_k, record_type="narrative")
 
-    # Fallback — if typed search returned nothing, try unfiltered
     if not results:
         print(f"[QueryEngine] No {intent} records found — falling back to full search.")
         results = query_chunks(question, top_k=top_k)
@@ -78,7 +77,7 @@ def _build_prompt(question: str, results: list[dict]) -> str:
     """
     Build RAG prompt with cited context.
     Each chunk is labelled with its record_type and segment so
-    Mistral can reference the source in its answer.
+    the LLM can reference the source in its answer.
     """
     context_lines = []
     for i, r in enumerate(results):
@@ -88,7 +87,7 @@ def _build_prompt(question: str, results: list[dict]) -> str:
 
         label = f"[{i+1}] ({rtype}"
         if segment and segment not in ("all", "unknown"):
-            label += f", segment={segment}"
+            label += f", quarter={segment}"
         if dist is not None:
             label += f", relevance={1 - dist:.2f}"
         label += ")"
@@ -98,11 +97,12 @@ def _build_prompt(question: str, results: list[dict]) -> str:
     context = "\n".join(context_lines)
 
     return f"""
-You are a Data Science assistant. Answer the question using ONLY the context below.
-Each context item is labelled with its source type and segment.
+You are a Quantitative Analyst assistant. Answer the question using ONLY the context below.
+Each context item is labelled with its source type (narrative, segment_summary, or prediction)
+and the quarter it relates to.
 Cite the source label (e.g. [1], [2]) when you use it in your answer.
 If the context doesn't contain enough information, say "I don't have data on that."
-Never make up numbers, model names, or segment names not present in the context.
+Never make up numbers, quarter names, SHAP values, or feature names not present in the context.
 
 CONTEXT:
 {context}
@@ -166,8 +166,8 @@ def run_chat():
     so you can verify retrieval is working during development.
     """
     print("\n" + "="*58)
-    print("  NexusML Query Engine")
-    print("  Ask questions about your model results.")
+    print("  NexusML — Financial Prediction Query Engine")
+    print("  Ask questions about your model's prediction results.")
     print("  Type 'help' for example questions. 'quit' to exit.")
     print("="*58)
 
@@ -178,20 +178,22 @@ def run_chat():
         print(f"   narrative       : {by_type.get('narrative', 0)}")
         print(f"   segment_summary : {by_type.get('segment_summary', 0)}")
         print(f"   prediction      : {by_type.get('prediction', 0)}")
-        print(f"   Models  : {stats['unique_models']}")
         print(f"   Targets : {stats['unique_targets']}")
         if stats.get("segments"):
-            print(f"   Segments: {stats['segments']}")
+            print(f"   Quarters: {stats['segments']}")
     else:
         print("\n⚠️  Knowledge base empty. Run first: python main.py")
         return
 
     example_questions = [
-        "Which model performed better and why?",
-        "Which segment had the worst predictions?",
-        "What were the most important features?",
-        "Show me rows with high prediction error.",
-        "What was the RMSE for the Downtown segment?",
+        "How accurate were the predictions overall?",
+        "Which quarter had the worst prediction error?",
+        "What were the most important SHAP features?",
+        "Show me high-error predictions and what drove them.",
+        "Why did the model miss 2024Q3?",
+        "What was the MAPE for 2023Q2?",
+        "Which reaction day had the highest error?",
+        "What caused the large errors in 2024Q3 day 8?",
     ]
 
     print()
@@ -217,17 +219,15 @@ def run_chat():
             print()
             continue
 
-        # Get answer with routing info
         answer, intent, results = ask(question)
 
         print(f"\n[intent: {intent} | sources: {len(results)}]")
         print(f"Nexus: {answer}")
 
-        # Show sources in debug mode
         if results:
             print("\n  Sources used:")
             for i, r in enumerate(results[:3]):
-                dist = r.get("_distance", None)
+                dist     = r.get("_distance", None)
                 dist_str = f" dist={dist:.3f}" if dist is not None else ""
                 print(f"  [{i+1}] {r.get('record_type','?')}"
                       f"{dist_str} — {r['text'][:80]}...")

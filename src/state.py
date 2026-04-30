@@ -9,12 +9,12 @@ class FactoryState(TypedDict):
     """
     The shared memory for NexusML agents.
     """
-    # File Paths
-    raw_data_path: str
-    cleaned_data_path: Optional[str]
+    # File Paths — three CSVs instead of one
+    data_paths: Dict[str, str]       # {"results": ..., "shap": ..., "inputs": ...}
+    validated_data: Optional[Dict]   # wrangler writes load summary here on success
 
-    # Model Metadata
-    model_results: Dict[str, Any]
+    # Analysis Metadata (pre-computed predictions, not trained models)
+    analysis_results: Dict[str, Any]
 
     # Semantic Registry (what goes into LanceDB)
     report_chunks: List[str]

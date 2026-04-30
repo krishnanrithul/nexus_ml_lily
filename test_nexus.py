@@ -2,7 +2,7 @@ import os
 from src.state import FactoryState
 from src.manager import manager_node
 from src.workers.wrangler import wrangler_node
-from src.workers.modeler import modeler_node
+from nexus_ml_lily.src.workers.analyzer import modeler_node
 from src.workers.chronicler import chronicler_node
 from src.tools.vector_ops import clear_table, table_stats, get_all_chunks
 

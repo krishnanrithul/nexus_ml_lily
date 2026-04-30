@@ -1,7 +1,7 @@
 from src.state import client, FactoryState
 
 # Valid actions the LLM can return
-_VALID_ACTIONS = {"wrangler", "wrangler_retry", "modeler", "modeler_retry", "chronicler", "end"}
+_VALID_ACTIONS = {"wrangler", "wrangler_retry", "analyzer", "analyzer_retry", "chronicler", "end"}
 
 # Hard cap on retries — prevents infinite self-correction loops
 _MAX_RETRIES = 2
@@ -12,16 +12,20 @@ def _build_routing_prompt(state: FactoryState) -> str:
     Summarises the current pipeline state for the LLM to reason over.
     Gives the manager everything it needs to make a decision.
     """
-    # Summarise what's done so far
     completed = []
-    if state.get("cleaned_data_path"):
-        completed.append(f"- Data cleaned and saved to: {state['cleaned_data_path']}")
-    if state.get("model_results"):
-        mr = state["model_results"]
+    if state.get("validated_data"):
+        vd = state["validated_data"]
         completed.append(
-            f"- Models trained. Best: {mr.get('best_model')}, "
-            f"RMSE: {mr.get('rf_rmse', mr.get('lr_rmse', 'unknown')):.2f}, "
-            f"Target: {mr.get('target_column')}"
+            f"- Data validated: {vd.get('results_rows')} prediction rows, "
+            f"{vd.get('shap_rows')} SHAP rows, "
+            f"{vd.get('input_rows')} input snapshots"
+        )
+    if state.get("analysis_results"):
+        ar = state["analysis_results"]
+        completed.append(
+            f"- Analysis complete. Target: {ar.get('target_column')}, "
+            f"Overall RMSE: {ar.get('overall_rmse', 'unknown'):.4f}, "
+            f"Quarters analysed: {ar.get('n_quarters')}"
         )
     if state.get("report_chunks"):
         completed.append(f"- Narrative indexed: {len(state['report_chunks'])} chunks in LanceDB")
@@ -47,8 +51,8 @@ You are the orchestration manager of NexusML, an agentic ML pipeline.
 Your job is to assess the current state and decide what happens next.
 
 PIPELINE STAGES (in order):
-1. wrangler   — cleans raw CSV data
-2. modeler    — trains LinearRegression and RandomForest, picks best
+1. wrangler   — validates and loads the three input CSVs (prediction results, SHAP features, input features)
+2. analyzer   — computes performance metrics from pre-computed model outputs and SHAP values
 3. chronicler — generates narrative from results, indexes to LanceDB
 4. end        — all stages complete
 
@@ -60,10 +64,10 @@ Last error: {error_str}
 Messages: {state.get('messages', [])}
 {diagnosis_instruction}
 AVAILABLE ACTIONS:
-- wrangler        : run data cleaning (first time)
+- wrangler        : validate and load all three CSVs (first time)
 - wrangler_retry  : re-run wrangler with error context (only if wrangler failed)
-- modeler         : run model training
-- modeler_retry   : re-run modeler with error context (only if modeler failed)
+- analyzer        : compute metrics from prediction results and SHAP data
+- analyzer_retry  : re-run analyzer with error context (only if analyzer failed)
 - chronicler      : generate narrative and index to LanceDB
 - end             : pipeline is complete or unrecoverable
 
@@ -115,19 +119,19 @@ def manager_node(state: FactoryState) -> dict:
 
     # Deterministic guards — check if stages are complete before asking LLM
     # This prevents the LLM from looping on stages that have already run
-    
-    if not state.get("cleaned_data_path"):
-        print("Manager: No cleaned data. Routing to [WRANGLER]")
+
+    if not state.get("validated_data"):
+        print("Manager: No validated data. Routing to [WRANGLER]")
         return {"next_step": "wrangler", "retry_count": 0}
-    
-    if not state.get("model_results"):
-        print("Manager: Data cleaned but no models. Routing to [MODELER]")
-        return {"next_step": "modeler", "retry_count": 0}
-    
+
+    if not state.get("analysis_results"):
+        print("Manager: Data validated but no analysis. Routing to [ANALYZER]")
+        return {"next_step": "analyzer", "retry_count": 0}
+
     if not state.get("report_chunks"):
-        print("Manager: Models trained but no narrative. Routing to [CHRONICLER]")
+        print("Manager: Analysis done but no narrative. Routing to [CHRONICLER]")
         return {"next_step": "chronicler", "retry_count": 0}
-    
+
     # All stages complete
     print("Manager: ✅ All stages complete. Routing to END.")
     return {
